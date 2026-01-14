@@ -331,6 +331,17 @@ void handleButtons() {
   bool downCur = digitalRead(BTN_DOWN) == LOW;
   bool modeCur = digitalRead(BTN_MODE) == LOW;
 
+  // If the display is asleep, the first button press should only wake it.
+  if (!displayOn && (upCur || downCur || modeCur)) {
+    wakeDisplay();
+    upPrev = upCur;
+    downPrev = downCur;
+    modePrev = modeCur;
+    nextUpRepeat = 0;
+    nextDownRepeat = 0;
+    return;
+  }
+
   bool changed = false;
 
   // On press edges for up/down (LOW transition)
