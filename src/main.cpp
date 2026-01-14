@@ -17,8 +17,17 @@
 #include <Fonts/FreeSansBold12pt7b.h>
 
 // ================= WIFI =================
-const char* ssid = "ww_plus";
-const char* pass = "Makosteszt";
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#ifndef WIFI_SSID
+#define WIFI_SSID "REPLACE_ME"
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS "REPLACE_ME"
+#endif
+const char* ssid = WIFI_SSID;
+const char* pass = WIFI_PASS;
 
 // ================= VERSION =================
 const char* FW_VERSION = "1.0.0";
