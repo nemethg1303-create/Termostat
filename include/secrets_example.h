@@ -1,7 +1,18 @@
 #pragma once
 
-// Copy this file to include/secrets.h and replace values
-// This file is NOT used directly by the build.
+// Másold ezt a fájlt secrets.h néven, és töltsd ki az értékeket.
+// A secrets.h nincs verziókezelve, így a valódi SSID/jelszó nem kerül fel GitHubra.
 
-#define WIFI_SSID "your-ssid"
-#define WIFI_PASS "your-password"
+#ifndef WIFI_SSID
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+
+#ifndef WIFI_PASS
+#define WIFI_PASS "YOUR_WIFI_PASSWORD"
+#endif
+
+// Opcionális egyszerű PIN a webes vezérlő végpontokhoz.
+// Ha üresen hagyod, nem lesz ellenőrzés.
+#ifndef CONTROL_PIN
+#define CONTROL_PIN ""
+#endif

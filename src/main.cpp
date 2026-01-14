@@ -17,23 +17,9 @@
 #include <Fonts/FreeSansBold12pt7b.h>
 
 // ================= WIFI =================
-#ifndef WIFI_SSID
-#define WIFI_SSID ""
+#if __has_include("secrets.h")
+#include "secrets.h"
 #endif
-#ifndef WIFI_PASS
-#define WIFI_PASS ""
-#endif
-const char* ssid = WIFI_SSID;
-const char* pass = WIFI_PASS;
-#define WIFI_SSID ""
-#endif
-
-#ifndef WIFI_PASS
-#define WIFI_PASS ""
-#endif
-
-const char* ssid = WIFI_SSID;
-const char* pass = WIFI_PASS;
 #ifndef WIFI_SSID
 #define WIFI_SSID "REPLACE_ME"
 #endif
@@ -339,7 +325,7 @@ void handleButtons() {
   static bool modePrev = true; // pull-up -> idle HIGH
   static uint32_t nextUpRepeat = 0;
   static uint32_t nextDownRepeat = 0;
-  const uint32_t REPEAT_MS = 500; // hold repeat interval
+  const uint32_t REPEAT_MS = 300; // hold repeat interval
 
   bool upCur = digitalRead(BTN_UP) == LOW;
   bool downCur = digitalRead(BTN_DOWN) == LOW;
