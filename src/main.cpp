@@ -34,7 +34,7 @@ const char* ssid = WIFI_SSID;
 const char* pass = WIFI_PASS;
 
 // ================= VERSION =================
-const char* FW_VERSION = "1.0.0";
+const char* FW_VERSION = "1.1.0";
 
 // ================= OLED =================
 #define OLED_ADDR 0x3C
