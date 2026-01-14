@@ -17,14 +17,32 @@
 #include <Fonts/FreeSansBold12pt7b.h>
 
 // ================= WIFI =================
-#if __has_include("secrets.h")
-#include "secrets.h"
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
 #endif
+#ifndef WIFI_PASS
+#define WIFI_PASS ""
+#endif
+const char* ssid = WIFI_SSID;
+const char* pass = WIFI_PASS;
+#define WIFI_SSID ""
+#endif
+
+#ifndef WIFI_PASS
+#define WIFI_PASS ""
+#endif
+
+const char* ssid = WIFI_SSID;
+const char* pass = WIFI_PASS;
 #ifndef WIFI_SSID
 #define WIFI_SSID "REPLACE_ME"
 #endif
 #ifndef WIFI_PASS
 #define WIFI_PASS "REPLACE_ME"
+#endif
+// Optional simple control PIN for web endpoints (set in secrets.h). Empty string disables checking.
+#ifndef CONTROL_PIN
+#define CONTROL_PIN ""
 #endif
 const char* ssid = WIFI_SSID;
 const char* pass = WIFI_PASS;
@@ -183,9 +201,15 @@ void setup() {
   Serial.println(bmpOK ? F("[Thermostat] BMP280 OK") : F("[Thermostat] BMP280 FAIL"));
   Serial.print(F("[Thermostat] Connecting WiFi: ")); Serial.print(ssid);
   WiFi.begin(ssid, pass);
-  while (WiFi.status() != WL_CONNECTED) { Serial.print('.'); delay(300); }
+  uint32_t wifiStart = millis();
+  const uint32_t WIFI_TIMEOUT_MS = 30000; // 30s timeout
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_TIMEOUT_MS) { Serial.print('.'); delay(300); }
   Serial.println();
-  Serial.print(F("[Thermostat] WiFi connected, IP: ")); Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print(F("[Thermostat] WiFi connected, IP: ")); Serial.println(WiFi.localIP());
+  } else {
+    Serial.println(F("[Thermostat] WiFi connect timeout, continuing offline"));
+  }
 
   setupWeb();
   Serial.println(F("[Thermostat] Setup done"));
@@ -209,22 +233,48 @@ void loop() {
     Serial.print(F(" relay=")); Serial.println(relayState ? F("ON") : F("OFF"));
     lastLog = millis();
   }
-  delay(200);
+  // Small cooperative delay to keep WDT happy
+  delay(10);
 }
 
 // =================================================
 // ================= TEMPERATURE ===================
 // =================================================
 float getTemperature() {
+  static float lastGood = NAN;
+  static uint32_t lastGoodMs = 0;
+  static float filt = NAN;
+  const float alpha = 0.2f; // EMA factor
+
   sensors_event_t h, t;
   bool ok = aht.getEvent(&h, &t);
   float bmpT = bmp.readTemperature();
 
-  if (!ok && isnan(bmpT)) return NAN;
-  if (!ok) return bmpT;
-  if (isnan(bmpT)) return t.temperature;
+  float raw = NAN;
+  if (!ok && isnan(bmpT)) {
+    raw = NAN;
+  } else if (!ok) {
+    raw = bmpT;
+  } else if (isnan(bmpT)) {
+    raw = t.temperature;
+  } else {
+    raw = (t.temperature + bmpT) / 2.0f;
+  }
 
-  return (t.temperature + bmpT) / 2.0;
+  if (!isnan(raw)) {
+    lastGood = raw;
+    lastGoodMs = millis();
+    if (isnan(filt)) filt = raw;
+    else filt = alpha * raw + (1.0f - alpha) * filt;
+    return filt;
+  }
+
+  // If sensors failed, use last good value for up to 10s
+  if (!isnan(lastGood) && millis() - lastGoodMs < 10000) {
+    if (isnan(filt)) return lastGood;
+    return filt;
+  }
+  return NAN;
 }
 
 // =================================================
@@ -289,7 +339,7 @@ void handleButtons() {
   static bool modePrev = true; // pull-up -> idle HIGH
   static uint32_t nextUpRepeat = 0;
   static uint32_t nextDownRepeat = 0;
-  const uint32_t REPEAT_MS = 300; // hold repeat interval
+  const uint32_t REPEAT_MS = 500; // hold repeat interval
 
   bool upCur = digitalRead(BTN_UP) == LOW;
   bool downCur = digitalRead(BTN_DOWN) == LOW;
@@ -416,8 +466,7 @@ void drawDisplay() {
   // Relay status
   display.setCursor(rightX, y2b);
   {
-    bool heatOn = RELAY_ACTIVE_HIGH ? (digitalRead(RELAY_PIN) == HIGH) : (digitalRead(RELAY_PIN) == LOW);
-    display.print(heatOn ? "H:ON" : "H:OFF");
+    display.print(relayState ? "H:ON" : "H:OFF");
   }
 
   // Setpoint
@@ -476,7 +525,7 @@ void maybeSaveState() {
 void setupWeb() {
   server.on("/", []() {
     float temp = getTemperature();
-    bool heatOn = RELAY_ACTIVE_HIGH ? (digitalRead(RELAY_PIN) == HIGH) : (digitalRead(RELAY_PIN) == LOW);
+    bool heatOn = relayState;
     String modeStr = String(mode == MODE_OFF ? "OFF" : (mode == MODE_AUTO ? "AUTO" : "ON"));
     String relayStr = String(heatOn ? "ON" : "OFF");
     String relayColor = String(heatOn ? "#2ecc71" : "#e74c3c"); // green/red
@@ -518,15 +567,17 @@ void setupWeb() {
     server.send(200, "text/html", html);
   });
 
-  // diagnostics/calibration routes removed
+  // Optional PIN check for control endpoints
+  auto checkPin = []() -> bool {
+    String pinArg = server.hasArg("pin") ? server.arg("pin") : String("");
+    String required = String(CONTROL_PIN);
+    if (required.length() == 0) return true; // no pin required
+    return pinArg == required;
+  };
 
-  server.on("/up", [](){ setTemp += 0.5; pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
-  server.on("/down", [](){ setTemp -= 0.5; pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
-  server.on("/mode", [](){
-    mode = (Mode)((mode + 1) % 3);
-    pendingSave = true; lastChangeMs = millis();
-    server.sendHeader("Location","/"); server.send(303);
-  });
+  server.on("/up", [checkPin](){ if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; } setTemp += 0.5; pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
+  server.on("/down", [checkPin](){ if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; } setTemp -= 0.5; pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
+  server.on("/mode", [checkPin](){ if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; } mode = (Mode)((mode + 1) % 3); pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
 
   server.begin();
 }
