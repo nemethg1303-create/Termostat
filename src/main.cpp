@@ -34,7 +34,7 @@ const char* ssid = WIFI_SSID;
 const char* pass = WIFI_PASS;
 
 // ================= VERSION =================
-const char* FW_VERSION = "1.1.0";
+const char* FW_VERSION = "1.1.1";
 
 // ================= OLED =================
 #define OLED_ADDR 0x3C
@@ -55,6 +55,10 @@ Adafruit_BMP280 bmp;
 #define BTN_MODE  D0
 // Relay electrical behavior: true if HIGH energizes the relay, false if LOW energizes
 const bool RELAY_ACTIVE_HIGH = false;
+// Minimum ON duration to avoid chattering. Override via secrets.h by defining MIN_ON_TIME_MS.
+#ifndef MIN_ON_TIME_MS
+#define MIN_ON_TIME_MS (5UL * 60UL * 1000UL) // default: 5 minutes
+#endif
 
 // ================= EEPROM =================
 #define EEPROM_SIZE 32
@@ -87,6 +91,7 @@ ESP8266WebServer server(80);
 WebServer server(80);
 #endif
 bool relayState = false;
+uint32_t relayOnSinceMs = 0; // timestamp when relay last turned ON
 uint32_t lastButtonTime = 0;
 bool displayOn = true;
 // EEPROM save control (wear reduction)
@@ -266,6 +271,10 @@ float getTemperature() {
 // =================================================
 // ================= RELAY LOGIC ===================
 void setRelay(bool on) {
+  // Update ON timestamp only on rising edge
+  if (on && !relayState) {
+    relayOnSinceMs = millis();
+  }
   relayState = on;
   if (RELAY_ACTIVE_HIGH) {
     digitalWrite(RELAY_PIN, on ? HIGH : LOW);
@@ -277,29 +286,39 @@ void setRelay(bool on) {
 void controlHeating() {
   float temp = getTemperature();
 
+  // Compute desired state first (without timing guard)
+  bool wantOn = relayState;
+
   if (mode == MODE_ON) {
-    setRelay(true);
-    return;
-  }
-
-  if (mode == MODE_OFF) {
+    wantOn = true;
+  } else if (mode == MODE_OFF) {
     if (isnan(temp)) {
-      setRelay(true);
-      return;
+      wantOn = true; // fail-safe heat
+    } else {
+      if (temp < FROST_ON)  wantOn = true;
+      if (temp > FROST_OFF) wantOn = false;
     }
-    if (temp < FROST_ON)  setRelay(true);
-    if (temp > FROST_OFF) setRelay(false);
-    return;
+  } else { // MODE_AUTO
+    if (isnan(temp)) {
+      wantOn = true; // fail-safe heat
+    } else {
+      if (temp < setTemp - hysteresis) wantOn = true;
+      if (temp > setTemp + hysteresis) wantOn = false;
+    }
   }
 
-  // MODE_AUTO
-  if (isnan(temp)) {
-    setRelay(true);
-    return;
+  // Enforce minimum ON time: once ON, keep it ON for at least MIN_ON_TIME_MS
+  if (relayState && !wantOn) {
+    uint32_t onElapsed = millis() - relayOnSinceMs;
+    if (onElapsed < MIN_ON_TIME_MS) {
+      // Too soon to turn off; keep ON
+      wantOn = true;
+    }
   }
 
-  if (temp < setTemp - hysteresis) setRelay(true);
-  if (temp > setTemp + hysteresis) setRelay(false);
+  if (wantOn != relayState) {
+    setRelay(wantOn);
+  }
 }
 
 // =================================================

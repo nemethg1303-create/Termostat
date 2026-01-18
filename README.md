@@ -3,7 +3,8 @@
 ESP8266 (Wemos D1 mini) alapú termosztát AHTX0 + BMP280 szenzorokkal, SSD1306 I2C OLED kijelzővel (128×32), webes felülettel és relévezérléssel.
 
 **Verziók**
-- FW v1.1.0 — WiFi timeout, EMA szűrés, opcionális PIN a webes vezérléshez, 300 ms gomb-ismétlés, kisebb loop késleltetés.
+- FW v1.1.1 — dokumentáció frissítés, relé minimális bekapcsolási idő konfigurálása 1 percre a telepített `include/secrets.h`-ban (alapértelmezés továbbra is 5 perc).
+- FW v1.1.0 — WiFi timeout, EMA szűrés, opcionális PIN a webes vezérléshez, 300 ms gomb-ismétlés, kisebb loop késleltetés, minimális relé bekapcsolási idő (alapértelmezés: 5 perc, állítható).
 - FW v1.0.0 — stabil alapfunkciók és kijelzőelrendezés.
 
 ## Áttekintés
@@ -64,6 +65,17 @@ C:\.platformio\penv\Scripts\platformio.exe device monitor --environment d1_mini
   - MODE: mód váltás (OFF → AUTO → ON → OFF…)
 - Web felület: böngészőben az ESP IP címén a `/` útvonal.
   - Vezérlők: `/up`, `/down`, `/mode` (opcionális PIN: `?pin=1234`).
+
+### Minimális relé bekapcsolási idő (anti-chatter)
+- Cél: ha a relé bekapcsol, maradjon bekapcsolva legalább X percig, így nem „csetteg” gyorsan ki-be a hiszterézis szélén.
+- Alapértelmezés: 5 perc.
+- Állítás: másold át az include/secrets_example.h fájlból a megjegyzést az include/secrets.h fájlba, és add hozzá pl. 10 perchez:
+  
+  ```c
+  #define MIN_ON_TIME_MS (10UL * 60UL * 1000UL)
+  ```
+  
+- Működés: a kikapcsolást csak akkor engedi, ha a bekapcsolás óta eltelt legalább a megadott idő. Ez a hiszterézis mellett további védelmet ad a gyakori kapcsolgatás ellen.
 
 ## WiFi beállítás és titkok
 - Másold az include/secrets_example.h fájlt include/secrets.h néven, és töltsd ki a `WIFI_SSID` / `WIFI_PASS` mezőket.
