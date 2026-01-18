@@ -6,3 +6,40 @@
 
 # do not commit local secrets
 include/secrets.h
+
+### Arduino defaults (.gitignore)
+# Arduino / PlatformIO / Arduino CLI
+.arduino-cli/
+.arduino15/
+.arduinoIDE/
+
+# Build output folders
+build/
+build-*/
+.dist/
+
+autogen/
+
+# Compiled binaries and maps
+*.bin
+*.elf
+*.hex
+*.map
+*.lst
+*.eep
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
