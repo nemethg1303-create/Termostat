@@ -3,6 +3,7 @@
 ESP8266 (Wemos D1 mini) alapú termosztát AHTX0 + BMP280 szenzorokkal, SSD1306 I2C OLED kijelzővel (128×32), webes felülettel és relévezérléssel.
 
 **Verziók**
+- FW v2.0.0 — MQTT + Home Assistant autodiscovery, állapot és parancs topicok, discovery újraküldés gomb a weben.
 - FW v1.1.1 — dokumentáció frissítés, relé minimális bekapcsolási idő konfigurálása 1 percre a telepített `include/secrets.h`-ban (alapértelmezés továbbra is 5 perc).
 - FW v1.1.0 — WiFi timeout, EMA szűrés, opcionális PIN a webes vezérléshez, 300 ms gomb-ismétlés, kisebb loop késleltetés, minimális relé bekapcsolási idő (alapértelmezés: 5 perc, állítható).
 - FW v1.0.0 — stabil alapfunkciók és kijelzőelrendezés.
@@ -81,6 +82,28 @@ C:\.platformio\penv\Scripts\platformio.exe device monitor --environment d1_mini
 - Másold az include/secrets_example.h fájlt include/secrets.h néven, és töltsd ki a `WIFI_SSID` / `WIFI_PASS` mezőket.
 - A `CONTROL_PIN` opcionális; ha üres, nincs védelem a webes vezérlő végpontokon.
 - A secrets.h fájl .gitignore-ban van, így a jelszó nem kerül verziókezelésbe.
+
+## MQTT / Home Assistant
+- MQTT broker szükséges (pl. Mosquitto). A Home Assistant MQTT integrációja legyen aktív.
+- Autodiscovery alapértelmezetten engedélyezett, a discovery prefix: `homeassistant`.
+- Topicok alapja: `thermostat/<deviceId>/...`
+- Web felületen elérhető: **Discovery újraküldés** gomb (ha a HA lemaradt róla).
+
+### MQTT beállítások (secrets.h)
+```cpp
+#define MQTT_HOST "192.168.0.119"
+#define MQTT_PORT 1883
+#define MQTT_USER "your_user"
+#define MQTT_PASS "your_pass"
+#define MQTT_BASE_TOPIC "thermostat"
+#define MQTT_DISCOVERY_PREFIX "homeassistant"
+#define MQTT_DEVICE_NAME "Thermostat"
+```
+
+### Home Assistant entitások
+- Climate entitás (mód + setpoint + aktuális hőmérséklet)
+- Temperature szenzor
+- Heating binary sensor
 
 ## EEPROM mentés és kopásvédelem
 - Célhő és mód mentése EEPROM-ba.

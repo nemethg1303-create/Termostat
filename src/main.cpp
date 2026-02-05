@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
+#include <math.h>
 #if defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -15,6 +16,7 @@
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
+#include <PubSubClient.h>
 
 // ================= WIFI =================
 #if __has_include("secrets.h")
@@ -33,8 +35,31 @@
 const char* ssid = WIFI_SSID;
 const char* pass = WIFI_PASS;
 
+// ================= MQTT =================
+#ifndef MQTT_HOST
+#define MQTT_HOST "homeassistant.local"
+#endif
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+#ifndef MQTT_USER
+#define MQTT_USER ""
+#endif
+#ifndef MQTT_PASS
+#define MQTT_PASS ""
+#endif
+#ifndef MQTT_BASE_TOPIC
+#define MQTT_BASE_TOPIC "thermostat"
+#endif
+#ifndef MQTT_DISCOVERY_PREFIX
+#define MQTT_DISCOVERY_PREFIX "homeassistant"
+#endif
+#ifndef MQTT_DEVICE_NAME
+#define MQTT_DEVICE_NAME "Thermostat"
+#endif
+
 // ================= VERSION =================
-const char* FW_VERSION = "1.1.1";
+const char* FW_VERSION = "2.0.0";
 
 // ================= OLED =================
 #define OLED_ADDR 0x3C
@@ -90,6 +115,22 @@ ESP8266WebServer server(80);
 #elif defined(ARDUINO_ARCH_ESP32)
 WebServer server(80);
 #endif
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+String deviceId;
+String mqttBaseTopic;
+String topicTemp;
+String topicSetpointState;
+String topicSetpointCmd;
+String topicModeState;
+String topicModeCmd;
+String topicRelay;
+String topicAction;
+String topicAvailability;
+uint32_t lastMqttReconnectAttempt = 0;
+uint32_t lastMqttPublish = 0;
+const uint32_t MQTT_RECONNECT_MS = 5000;
+const uint32_t MQTT_STATE_INTERVAL_MS = 60000;
 bool relayState = false;
 uint32_t relayOnSinceMs = 0; // timestamp when relay last turned ON
 uint32_t lastButtonTime = 0;
@@ -112,6 +153,11 @@ void drawDisplay();
 float getTemperature();
 void setRelay(bool on);
 void scanI2C();
+void setupMqtt();
+void mqttLoop();
+void mqttPublishDiscovery();
+void mqttPublishState(bool force);
+void mqttCallback(char* topic, byte* payload, unsigned int length);
 // diagnostics removed
 void maybeSaveState();
 
@@ -203,6 +249,7 @@ void setup() {
   }
 
   setupWeb();
+  setupMqtt();
   Serial.println(F("[Thermostat] Setup done"));
 }
  
@@ -213,6 +260,7 @@ void loop() {
   updateDisplayPower();
   maybeSaveState();
   if (displayOn) drawDisplay();
+  mqttLoop();
   // Periodic heartbeat to serial for monitoring
   static uint32_t lastLog = 0;
   if (millis() - lastLog > 3000) {
@@ -226,6 +274,215 @@ void loop() {
   }
   // Small cooperative delay to keep WDT happy
   delay(10);
+}
+
+// =================================================
+// ================= MQTT ==========================
+// =================================================
+
+String getDeviceId() {
+#if defined(ARDUINO_ARCH_ESP8266)
+  return String(ESP.getChipId(), HEX);
+#elif defined(ARDUINO_ARCH_ESP32)
+  uint64_t mac = ESP.getEfuseMac();
+  uint32_t hi = (uint32_t)(mac >> 32);
+  uint32_t lo = (uint32_t)(mac & 0xFFFFFFFF);
+  return String(hi, HEX) + String(lo, HEX);
+#else
+  return String("device");
+#endif
+}
+
+void setupMqtt() {
+  if (String(MQTT_HOST).length() == 0) return;
+
+  deviceId = getDeviceId();
+  Serial.print(F("[MQTT] Host: ")); Serial.print(MQTT_HOST);
+  Serial.print(F(" Port: ")); Serial.print(MQTT_PORT);
+  Serial.print(F(" DeviceId: ")); Serial.println(deviceId);
+  mqttBaseTopic = String(MQTT_BASE_TOPIC) + "/" + deviceId;
+  topicTemp = mqttBaseTopic + "/temperature";
+  topicSetpointState = mqttBaseTopic + "/setpoint";
+  topicSetpointCmd = mqttBaseTopic + "/setpoint/set";
+  topicModeState = mqttBaseTopic + "/mode/state";
+  topicModeCmd = mqttBaseTopic + "/mode/set";
+  topicRelay = mqttBaseTopic + "/relay";
+  topicAction = mqttBaseTopic + "/action";
+  topicAvailability = mqttBaseTopic + "/status";
+
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+}
+
+void mqttLoop() {
+  if (String(MQTT_HOST).length() == 0) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  if (!mqttClient.connected()) {
+    uint32_t now = millis();
+    if (now - lastMqttReconnectAttempt < MQTT_RECONNECT_MS) return;
+    lastMqttReconnectAttempt = now;
+
+    String clientId = String("thermostat-") + deviceId;
+    Serial.print(F("[MQTT] Connecting as ")); Serial.println(clientId);
+    bool ok;
+    if (String(MQTT_USER).length() > 0) {
+      ok = mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, topicAvailability.c_str(), 0, true, "offline");
+    } else {
+      ok = mqttClient.connect(clientId.c_str(), topicAvailability.c_str(), 0, true, "offline");
+    }
+    if (ok) {
+      Serial.println(F("[MQTT] Connected"));
+      mqttClient.publish(topicAvailability.c_str(), "online", true);
+      mqttClient.subscribe(topicSetpointCmd.c_str());
+      mqttClient.subscribe(topicModeCmd.c_str());
+      mqttPublishDiscovery();
+      mqttPublishState(true);
+    } else {
+      Serial.print(F("[MQTT] Connect failed, state="));
+      Serial.println(mqttClient.state());
+    }
+    return;
+  }
+
+  mqttClient.loop();
+
+  if (millis() - lastMqttPublish > MQTT_STATE_INTERVAL_MS) {
+    mqttPublishState(true);
+  }
+}
+
+void mqttPublishDiscovery() {
+  String disc = String(MQTT_DISCOVERY_PREFIX);
+  if (disc.length() == 0) return;
+
+  Serial.println(F("[MQTT] Publishing discovery"));
+
+  String deviceJson = String("{\"identifiers\":[\"") + deviceId + "\"]," +
+                      "\"name\":\"" + String(MQTT_DEVICE_NAME) + "\"," +
+                      "\"model\":\"Thermostat\"," +
+                      "\"manufacturer\":\"DIY\"}";
+
+  // Climate entity
+  String climateTopic = disc + "/climate/" + deviceId + "/config";
+  String climatePayload = String("{") +
+    "\"name\":\"" + String(MQTT_DEVICE_NAME) + "\"," +
+    "\"unique_id\":\"thermostat_" + deviceId + "\"," +
+    "\"mode_state_topic\":\"" + topicModeState + "\"," +
+    "\"mode_command_topic\":\"" + topicModeCmd + "\"," +
+    "\"temperature_state_topic\":\"" + topicSetpointState + "\"," +
+    "\"temperature_command_topic\":\"" + topicSetpointCmd + "\"," +
+    "\"current_temperature_topic\":\"" + topicTemp + "\"," +
+    "\"action_topic\":\"" + topicAction + "\"," +
+    "\"availability_topic\":\"" + topicAvailability + "\"," +
+    "\"payload_available\":\"online\"," +
+    "\"payload_not_available\":\"offline\"," +
+    "\"min_temp\":5," +
+    "\"max_temp\":30," +
+    "\"temp_step\":0.5," +
+    "\"modes\":[\"off\",\"auto\",\"heat\"]," +
+    "\"device\":" + deviceJson +
+  "}";
+  mqttClient.publish(climateTopic.c_str(), climatePayload.c_str(), true);
+
+  // Temperature sensor
+  String tempTopic = disc + "/sensor/" + deviceId + "_temperature/config";
+  String tempPayload = String("{") +
+    "\"name\":\"" + String(MQTT_DEVICE_NAME) + " Temperature\"," +
+    "\"unique_id\":\"thermostat_" + deviceId + "_temperature\"," +
+    "\"state_topic\":\"" + topicTemp + "\"," +
+    "\"unit_of_measurement\":\"°C\"," +
+    "\"device_class\":\"temperature\"," +
+    "\"availability_topic\":\"" + topicAvailability + "\"," +
+    "\"payload_available\":\"online\"," +
+    "\"payload_not_available\":\"offline\"," +
+    "\"device\":" + deviceJson +
+  "}";
+  mqttClient.publish(tempTopic.c_str(), tempPayload.c_str(), true);
+
+  // Heating relay binary sensor
+  String heatTopic = disc + "/binary_sensor/" + deviceId + "_heating/config";
+  String heatPayload = String("{") +
+    "\"name\":\"" + String(MQTT_DEVICE_NAME) + " Heating\"," +
+    "\"unique_id\":\"thermostat_" + deviceId + "_heating\"," +
+    "\"state_topic\":\"" + topicRelay + "\"," +
+    "\"payload_on\":\"ON\"," +
+    "\"payload_off\":\"OFF\"," +
+    "\"device_class\":\"heat\"," +
+    "\"availability_topic\":\"" + topicAvailability + "\"," +
+    "\"payload_available\":\"online\"," +
+    "\"payload_not_available\":\"offline\"," +
+    "\"device\":" + deviceJson +
+  "}";
+  mqttClient.publish(heatTopic.c_str(), heatPayload.c_str(), true);
+}
+
+void mqttPublishState(bool force) {
+  static float lastTemp = NAN;
+  static float lastSetpoint = NAN;
+  static Mode lastMode = MODE_AUTO;
+  static bool lastRelay = false;
+
+  float temp = getTemperature();
+  if (force || (!isnan(temp) && (isnan(lastTemp) || fabs(temp - lastTemp) >= 0.1f))) {
+    if (!isnan(temp)) {
+      mqttClient.publish(topicTemp.c_str(), String(temp, 1).c_str(), true);
+      lastTemp = temp;
+    }
+  }
+
+  if (force || fabs(setTemp - lastSetpoint) >= 0.1f) {
+    mqttClient.publish(topicSetpointState.c_str(), String(setTemp, 1).c_str(), true);
+    lastSetpoint = setTemp;
+  }
+
+  if (force || mode != lastMode) {
+    const char* m = (mode == MODE_OFF) ? "off" : (mode == MODE_AUTO ? "auto" : "heat");
+    mqttClient.publish(topicModeState.c_str(), m, true);
+    lastMode = mode;
+  }
+
+  if (force || relayState != lastRelay) {
+    mqttClient.publish(topicRelay.c_str(), relayState ? "ON" : "OFF", true);
+    mqttClient.publish(topicAction.c_str(), relayState ? "heating" : "idle", true);
+    lastRelay = relayState;
+  }
+
+  lastMqttPublish = millis();
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String t = String(topic);
+  String msg;
+  msg.reserve(length);
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  msg.trim();
+  String msgLower = msg;
+  msgLower.toLowerCase();
+
+  bool changed = false;
+
+  if (t == topicSetpointCmd) {
+    float val = msg.toFloat();
+    if (!isnan(val)) {
+      if (val < 5.0f) val = 5.0f;
+      if (val > 30.0f) val = 30.0f;
+      if (fabs(setTemp - val) >= 0.1f) {
+        setTemp = val;
+        changed = true;
+      }
+    }
+  } else if (t == topicModeCmd) {
+    if (msgLower == "off") { mode = MODE_OFF; changed = true; }
+    else if (msgLower == "auto") { mode = MODE_AUTO; changed = true; }
+    else if (msgLower == "heat" || msgLower == "on") { mode = MODE_ON; changed = true; }
+  }
+
+  if (changed) {
+    pendingSave = true;
+    lastChangeMs = millis();
+    mqttPublishState(true);
+  }
 }
 
 // =================================================
@@ -579,6 +836,9 @@ void setupWeb() {
     // Relay state card with color
     html += "<div class='card'><div class='label'>Fűtés relé</div><div class='relay' style='color:" + relayColor + "'>Relay: " + relayStr + "</div></div>";
 
+    // MQTT discovery republish
+    html += "<div class='card'><div class='label'>MQTT</div><div><a class='btn' href='/mqtt_discovery'>Discovery újraküldés</a></div></div>";
+
     html += "</div><div class='footer'>FW v" + String(FW_VERSION) + "</div></body></html>";
     server.send(200, "text/html", html);
   });
@@ -594,6 +854,14 @@ void setupWeb() {
   server.on("/up", [checkPin](){ if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; } setTemp += 0.5; pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
   server.on("/down", [checkPin](){ if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; } setTemp -= 0.5; pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
   server.on("/mode", [checkPin](){ if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; } mode = (Mode)((mode + 1) % 3); pendingSave = true; lastChangeMs = millis(); server.sendHeader("Location","/"); server.send(303); });
+
+  server.on("/mqtt_discovery", [checkPin](){
+    if (!checkPin()) { server.send(403, "text/plain", "Forbidden"); return; }
+    mqttPublishDiscovery();
+    mqttPublishState(true);
+    server.sendHeader("Location","/");
+    server.send(303);
+  });
 
   server.begin();
 }

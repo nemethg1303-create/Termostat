@@ -16,3 +16,32 @@
 #ifndef CONTROL_PIN
 #define CONTROL_PIN ""
 #endif
+
+// MQTT settings (optional)
+#ifndef MQTT_HOST
+#define MQTT_HOST "homeassistant.local"
+#endif
+
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+
+#ifndef MQTT_USER
+#define MQTT_USER ""
+#endif
+
+#ifndef MQTT_PASS
+#define MQTT_PASS ""
+#endif
+
+#ifndef MQTT_BASE_TOPIC
+#define MQTT_BASE_TOPIC "thermostat"
+#endif
+
+#ifndef MQTT_DISCOVERY_PREFIX
+#define MQTT_DISCOVERY_PREFIX "homeassistant"
+#endif
+
+#ifndef MQTT_DEVICE_NAME
+#define MQTT_DEVICE_NAME "Thermostat"
+#endif
